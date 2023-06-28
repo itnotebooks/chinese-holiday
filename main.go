@@ -36,23 +36,53 @@ type HolidayDate struct {
 }
 
 type Holiday struct {
-	Url          string
 	Year         int
 	HolidayDates []HolidayDate
 	Container    []soup.Root
 }
 
-func InitHolidayParse(url string, year int) *Holiday {
+func InitHolidayParse(year int) *Holiday {
 	return &Holiday{
-		Url:  url,
 		Year: year,
 	}
 }
 
-// FetchPage 请求页面并定位到 id = UCAP-CONTENT 的 div 容器，读取所有的 p 标签条目
-func (s *Holiday) FetchPage() error {
+// SearchPageUrls 检索指定年份的通知条目，获取具体条目的 URL
+func (s *Holiday) SearchPageUrls() (urls []string, err error) {
+	//检索关键字
+	queryParams := map[string]interface{}{
+		"t":           "paper",
+		"advance":     "true",
+		"title":       strconv.Itoa(s.Year),
+		"q":           "假期",
+		"pcodeJiguan": "国办发明电",
+		"puborg":      "国务院办公厅",
+	}
 
-	r, err := http.Get(s.Url, map[string]interface{}{})
+	ret, err := http.Get(SearchUrl, queryParams)
+	if err != nil {
+		return urls, err
+	}
+
+	// 分析页面，获取对应年份的放假通知条目具体页面的 url
+	for _, u := range regexp.MustCompile(
+		`<li class="res-list".*?<a href="(.+?)".*?</li>`,
+	).FindAllStringSubmatch(strings.Replace(ret, "\n", "", -1), -1) {
+		if len(u) < 2 {
+			continue
+		}
+
+		if u[1] != "" {
+			urls = append(urls, u[1])
+		}
+	}
+
+	return urls, err
+}
+
+// FetchPage 请求页面并定位到 id = UCAP-CONTENT 的 div 容器，读取所有的 p 标签条目
+func (s *Holiday) FetchPage(url string) error {
+	r, err := http.Get(url, map[string]interface{}{})
 	if err != nil {
 		return err
 	}
@@ -230,50 +260,32 @@ func (s *Holiday) ExtractDates(name, txt string, offDay bool) {
 
 }
 
-func Search(y int) {
+func Search(year int) {
 	defer wg.Done()
-	year := strconv.Itoa(y)
 
-	//检索关键字
-	queryParams := map[string]interface{}{
-		"t":           "paper",
-		"advance":     "true",
-		"title":       year,
-		"q":           "假期",
-		"pcodeJiguan": "国办发明电",
-		"puborg":      "国务院办公厅",
+	holiday := InitHolidayParse(year)
+	urls, err := holiday.SearchPageUrls()
+	if err != nil {
+		log.Fatalln(fmt.Sprintf("查询 %d 放假通知异常", year))
 	}
 
-	ret, err := http.Get(SearchUrl, queryParams)
-	if err != nil {
-		log.Fatalln(fmt.Sprintf("查询 %d 放假通知异常", y))
-	} else {
-		// 分析页面，获取对应年份的放假通知条目具体页面的 url
-		urls := regexp.MustCompile(`<li class="res-list".*?<a href="(.+?)".*?</li>`).FindAllStringSubmatch(strings.Replace(ret, "\n", "", -1), -1)
-		for _, url := range urls {
-			if len(url) < 2 {
-				continue
-			}
+	for _, url := range urls {
+		// 请求具体通知页面，并分析放假安排
+		log.Printf("[ %d ] ====> %s", year, url)
 
-			if url[1] == "" {
-				continue
-			}
+		if err = holiday.FetchPage(url); err != nil {
+			fmt.Errorf("获取并分析 %d 放假通知页面，异常\n%s\n", year, url)
+			continue
+		}
+		holiday.ParseRules()
 
-			// 请求具体通知页面，并分析放假安排
-			log.Printf("[ %d ] ====> %s", y, url[1])
-			holiday := InitHolidayParse(url[1], y)
-			if err = holiday.FetchPage(); err != nil {
-				fmt.Errorf("获取并分析 %d 放假通知页面，异常\n%s\n", y, url[1])
-				continue
-			}
-			holiday.ParseRules()
-
-			// todo: 结果处理
-			jsonStr, _ := json.Marshal(holiday.HolidayDates)
+		// todo: 结果处理
+		for _, d := range holiday.HolidayDates {
+			jsonStr, _ := json.Marshal(d)
 			fmt.Println(string(jsonStr))
 		}
-
 	}
+
 }
 
 /*
