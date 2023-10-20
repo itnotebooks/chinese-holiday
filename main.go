@@ -1,27 +1,31 @@
-// Copyright 2021 EricWinn
-// Author:   Eric Winn
-// Email:    eng.eric.winn@gmail.com
-// Time:     2023/6/26 21:03
-// File:     main.go
-// Software: GoLand
+/*
+ * Copyright (c) 2023 by EricWinn<eng.eric.winn@gmail.com>, All Rights Reserved.
+ * @Author: Eric Winn
+ * @Email: eng.eric.winn@gmail.com
+ * @Date: 2023-06-26 21:03:37
+ * @FilePath: /chinese-holiday/main.go
+ * @Software: VS Code
+ */
 
 package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/anaskhan96/soup"
-	"github.com/itnotebooks/chinese-holiday/utils/http"
 	"log"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/anaskhan96/soup"
+	"github.com/itnotebooks/chinese-holiday/utils/array"
+	"github.com/itnotebooks/chinese-holiday/utils/http"
 )
 
 const (
-	SearchUrl = "http://sousuo.gov.cn/s.htm"
+	SearchUrl = "https://sousuo.www.gov.cn/search-gov/data"
 )
 
 var (
@@ -41,6 +45,58 @@ type Holiday struct {
 	Container    []soup.Root
 }
 
+type ResponseError struct {
+	Code *int32  `json:"code,omitempty"`
+	Msg  *string `json:"msg,omitempty"`
+}
+
+type SearchPageResponseSearchVOListVO struct {
+	PCode      *string `json:"pcode,omitempty"`
+	Title      *string `json:"title,omitempty"`
+	TotalCount *int32  `json:"totalCount,omitempty"`
+	PubTimeStr *string `json:"pubtimeStr,omitempty"`
+	DateType   *bool   `json:"dateType,omitempty"`
+	CurrentNum *int32  `json:"currentNum,omitempty"`
+	ID         *string `json:"id,omitempty"`
+	PTime      *int64  `json:"ptime,omitempty"`
+	Summary    *string `json:"summary,omitempty"`
+	Index      *string `json:"index,omitempty"`
+	Url        *string `json:"url,omitempty"`
+	PubTime    *int64  `json:"pubtime,omitempty"`
+	PubOrg     *string `json:"puborg,omitempty"`
+}
+
+type SearchPageResponseSearchVO struct {
+	TotalCount  *int32                              `json:"totalCount,omitempty"`
+	PageSize    *int32                              `json:"pageSize,omitempty"`
+	MaxPageSize *int32                              `json:"maxPageSize,omitempty"`
+	CurrentPage *int32                              `json:"currentPage,omitempty"`
+	SearchTime  *int64                              `json:"searchTime,omitempty"`
+	StartTime   *int64                              `json:"startTime,omitempty"`
+	ListVO      []*SearchPageResponseSearchVOListVO `json:"listVO,omitempty"`
+}
+
+type SearchPageResponseParamsVO struct {
+	TenantCode  *string `json:"tenantCode,omitempty"`
+	T           *string `json:"t,omitempty"`
+	Q           *string `json:"q,omitempty"`
+	P           *int32  `json:"p,omitempty"`
+	N           *int32  `json:"n,omitempty"`
+	TimeType    *string `json:"timetype,omitempty"`
+	Sort        *string `json:"sort,omitempty"`
+	SortType    *int32  `json:"sortType,omitempty"`
+	SearchField *string `json:"searchfield,omitempty"`
+	PCodeJiguan *string `json:"pcodeJiguan,omitempty"`
+	PubOrg      *string `json:"puborg,omitempty"`
+	FileType    *string `json:"filetype,omitempty"`
+}
+
+type SearchPageResponse struct {
+	ResponseError
+	SearchVO *SearchPageResponseSearchVO `json:"searchVO,omitempty"`
+	ParamsVO *SearchPageResponseParamsVO `json:"paramsVO,omitempty"`
+}
+
 func InitHolidayParse(year int) *Holiday {
 	return &Holiday{
 		Year: year,
@@ -48,36 +104,51 @@ func InitHolidayParse(year int) *Holiday {
 }
 
 // SearchPageUrls 检索指定年份的通知条目，获取具体条目的 URL
-func (s *Holiday) SearchPageUrls() (urls []string, err error) {
-	//检索关键字
-	queryParams := map[string]interface{}{
-		"t":           "paper",
-		"advance":     "true",
-		"title":       strconv.Itoa(s.Year),
-		"q":           "假期",
-		"pcodeJiguan": "国办发明电",
-		"puborg":      "国务院办公厅",
-	}
+func (s *Holiday) SearchPageUrls() ([]string, error) {
+	urls := array.NewStringSet()
+	var response *SearchPageResponse
 
-	ret, err := http.Get(SearchUrl, queryParams)
-	if err != nil {
-		return urls, err
-	}
-
-	// 分析页面，获取对应年份的放假通知条目具体页面的 url
-	for _, u := range regexp.MustCompile(
-		`<li class="res-list".*?<a href="(.+?)".*?</li>`,
-	).FindAllStringSubmatch(strings.Replace(ret, "\n", "", -1), -1) {
-		if len(u) < 2 {
-			continue
+	page_index := 0
+	for {
+		//检索关键字
+		queryParams := map[string]interface{}{
+			"t":           "zhengcelibrary_gw",
+			"p":           strconv.Itoa(page_index),
+			"n":           strconv.Itoa(10),
+			"q":           fmt.Sprintf("假期 %d", s.Year),
+			"pcodeJiguan": "国办发明电",
+			"puborg":      "国务院办公厅",
+			"filetype":    "通知",
+			"sort":        "pubtime",
 		}
 
-		if u[1] != "" {
-			urls = append(urls, u[1])
+		resp, err := http.Get(SearchUrl, queryParams)
+		if err != nil {
+			return nil, fmt.Errorf("SearchPageUrls 查询请求异常，err: %s", err.Error())
+		}
+
+		if err := json.Unmarshal([]byte(resp), &response); err != nil {
+			return nil, fmt.Errorf("SearchPageUrls 返回结果解析异常，err: %s", err.Error())
+		}
+
+		if *response.Code != 200 {
+			log.Printf("%s: %d: %s", SearchUrl, *response.Code, *response.Msg)
+			return nil, nil
+		}
+
+		for _, item := range response.SearchVO.ListVO {
+			if strings.Contains(*item.Title, strconv.Itoa(s.Year)) {
+				urls.Add(*item.Url)
+			}
+		}
+
+		page_index += 1
+		if page_index >= int(*response.SearchVO.TotalCount) {
+			break
 		}
 	}
 
-	return urls, err
+	return urls.List(), nil
 }
 
 // FetchPage 请求页面并定位到 id = UCAP-CONTENT 的 div 容器，读取所有的 p 标签条目
@@ -90,7 +161,7 @@ func (s *Holiday) FetchPage(url string) error {
 	s.Container = soup.HTMLParse(r).Find("div", "id", "UCAP-CONTENT").FindAll("p")
 
 	if len(s.Container) == 0 {
-		return fmt.Errorf("Page parse error ")
+		return fmt.Errorf("page parse error ")
 	}
 	return nil
 }
@@ -266,7 +337,7 @@ func Search(year int) {
 	holiday := InitHolidayParse(year)
 	urls, err := holiday.SearchPageUrls()
 	if err != nil {
-		log.Fatalln(fmt.Sprintf("查询 %d 放假通知异常", year))
+		log.Fatalf("查询 %d 放假通知异常，err: %s", year, err.Error())
 	}
 
 	for _, url := range urls {
@@ -274,7 +345,7 @@ func Search(year int) {
 		log.Printf("[ %d ] ====> %s", year, url)
 
 		if err = holiday.FetchPage(url); err != nil {
-			fmt.Errorf("获取并分析 %d 放假通知页面，异常\n%s\n", year, url)
+			log.Printf("获取并分析 %d 放假通知页面，异常\n%s\n", year, url)
 			continue
 		}
 		holiday.ParseRules()
@@ -324,7 +395,7 @@ func Search(year int) {
 */
 func main() {
 	// 获取当前及下一个年份
-	for y := time.Now().Year(); y <= time.Now().Year()+1; y++ {
+	for y := time.Now().Year() - 1; y <= time.Now().Year()+1; y++ {
 		wg.Add(1)
 		go Search(y)
 	}
