@@ -69,6 +69,7 @@ type SearchPageResponseSearchVOListVO struct {
 type SearchPageResponseSearchVO struct {
 	TotalCount  *int32                              `json:"totalCount,omitempty"`
 	PageSize    *int32                              `json:"pageSize,omitempty"`
+	TotalPage   *int32                              `json:"totalPage,omitempty"`
 	MaxPageSize *int32                              `json:"maxPageSize,omitempty"`
 	CurrentPage *int32                              `json:"currentPage,omitempty"`
 	SearchTime  *int64                              `json:"searchTime,omitempty"`
@@ -108,7 +109,7 @@ func (s *Holiday) SearchPageUrls() ([]string, error) {
 	urls := array.NewStringSet()
 	var response *SearchPageResponse
 
-	page_index := 0
+	page_index := 1
 	for {
 		//检索关键字
 		queryParams := map[string]interface{}{
@@ -143,7 +144,7 @@ func (s *Holiday) SearchPageUrls() ([]string, error) {
 		}
 
 		page_index += 1
-		if page_index >= int(*response.SearchVO.TotalCount) {
+		if page_index > int(*response.SearchVO.TotalPage) {
 			break
 		}
 	}
